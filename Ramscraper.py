@@ -1,5 +1,5 @@
 from ctypes import *
-import re
+import os
 
 ### Setting the necessary vars and structs
 LPVOID = c_void_p
@@ -81,43 +81,78 @@ def EnablePrivilege(privilegeStr, hToken = None):
     
     windll.advapi32.AdjustTokenPrivileges(hToken, False, byref(tp), sizeof(tp), None, None)
 
+
+def scan_pids(proc_name):
+    """Get a list of every pid, and check the basename of the process, return if it is proc_name"""
+    count = 32
+    while True:
+        ProcessIds = ( DWORD * count)()
+        cb = sizeof( ProcessIds )
+        BytesReturned = DWORD()
+        if windll.psapi.EnumProcesses( byref(ProcessIds), cb, byref(BytesReturned)):
+            if BytesReturned.value < cb:
+                break
+            else:
+                count *= 2
+        
+    for index in range(BytesReturned.value / sizeof( DWORD ) ):
+        ProcessId = ProcessIds[index]
+        hProcess = windll.kernel32.OpenProcess(PROCESS_QUERY_INFORMATION, False, ProcessId)
+        if hProcess:
+            ImageFileName = ( c_char * 260 )()
+            if windll.psapi.GetProcessImageFileNameA(hProcess, ImageFileName, 260) > 0:
+                filename = os.path.basename(ImageFileName.value)
+                if filename == proc_name:
+                    windll.kernel32.CloseHandle(hProcess)
+                    return ProcessId
+            windll.kernel32.CloseHandle(hProcess) 
+
+
 ### THE INTERESTING PART ###
+## The pid of the process we are going to scan.
+proc_name = "notepad++.exe"
+print "[+]Scanning processes"
+print "\t[+]Process to scan for: " + proc_name
 
-## The pid of the process we are going to scan. 
-pid = 9248
+pid = scan_pids( proc_name )
+print "\t[+]Found pid: " + str( pid )
 
-## Get the min and max scan address.  
+## Get the min and max scan address.
+print "[+]Retrieving scan range"
 si = SYSTEM_INFO()
 windll.kernel32.GetSystemInfo( byref( si ) )
 
 addr = si.lpMinimumApplicationAddress
 maxaddr = si.lpMaximumApplicationAddress
 
+print "\t[+]Scan range: " + str( hex( addr ) ) + " - " + str( hex( maxaddr ) )
+
+
 ## Give this process SeDebugPrivilege
+print "[+]Enabling 'SeDebugPrivilege'"
 EnablePrivilege("SeDebugPrivilege")
 
 ## Open the process
+print "[+]Opening the process"
 hProcess = windll.kernel32.OpenProcess( PROCESS_VM_READ | PROCESS_VM_OPERATION | PROCESS_QUERY_INFORMATION, 0, pid )
 
+print "[+]Start scanning"
 while addr < maxaddr:
-
     MBI = MEMORY_BASIC_INFORMATION ()
     windll.kernel32.VirtualQueryEx (hProcess, addr, byref( MBI ), sizeof( MBI ))
 
 ## The new addr that will be scanned 
     addr += MBI.RegionSize
-
+    
     if MBI.Type == MEM_PRIVATE and MBI.State == MEM_COMMIT and MBI.Protect in ( PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_READWRITE ):
-        
+        print "\t[+]Found useful memory address: " + str( hex( MBI.BaseAddress ) ) + " | Region Size: " + str ( MBI.RegionSize / 1024) + "KB"
+
         cbuffer = c_buffer(MBI.RegionSize)
         windll.kernel32.ReadProcessMemory( hProcess, MBI.BaseAddress, cbuffer, MBI.RegionSize, 0 )
 
         data = cbuffer.raw
 
-## Test the data for something, this is a very simple regex example. It cheks for 16 digits.
-        match = re.search(r"\d{16", data)
-        if match:
-            print match.group(0)
+        if "Testing please" in data:
+            print "Found: " + str( MBI.BaseAddress )
 
 windll.kernel32.CloseHandle( hProcess )
-
