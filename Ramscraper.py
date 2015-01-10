@@ -96,6 +96,17 @@ def check_buffer( buffer ):
         return True
     return False
 
+def Processis64( hProcess ):
+    """From MSDN: 
+        a value that is set to TRUE if the process is running under WOW64. 
+        If the process is running under 32-bit Windows, the value is set to FALSE. 
+        If the process is a 64-bit application running under 64-bit Windows, the value is also set to FALSE"""
+
+    pis64 = c_bool()
+    windll.kernel32.IsWow64Process(hProcess, byref( pis64 ) ) 
+    
+    return pis64.value
+
 def scan_memory( ):
     """Scan the memory of every process except some predefined processes."""
     print "START SCANNING"
@@ -129,25 +140,26 @@ def scan_memory( ):
         pid = pe32.th32ProcessID
         
         
-        print "\tName: " + str( name ) + "| PID: " + str( pid )
+        print "\tName: " + str( name ) + " | PID: " + str( pid )
         if not name in skip and pid != ownpid:
-            print "\tScanning: "
+            print "\t\tScanning: "
             ## Open the process
             hProcess = windll.kernel32.OpenProcess( PROCESS_VM_READ | PROCESS_VM_OPERATION | PROCESS_QUERY_INFORMATION, 0, pid )
             
-            addr = c_long(0)
+            addr =  c_long(0)
 
             while True:
                 MBI = MEMORY_BASIC_INFORMATION()
-                windll.kernel32.VirtualQueryEx( hProcess, addr, byref( MBI ), sizeof( MBI ) )
-                if (addr.value != 0 and MBI.BaseAddress == None) or addr.value < 0:
+                windll.kernel32.VirtualQueryEx( hProcess, addr.value, byref( MBI ), sizeof( MBI ) )
+               
+                if ( addr.value != 0 and MBI.BaseAddress == None ) or (MBI.AllocationBase == None and not Processis64( hProcess ) ):
                     break
                 
                 ## The new addr that will be scanned 
                 addr.value += MBI.RegionSize
                 
                 if MBI.Type == MEM_PRIVATE and MBI.State == MEM_COMMIT and MBI.Protect in ( PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_READWRITE ):
-                    print "\t\tFound good region: " + str( MBI.BaseAddress )
+                    #print "\t\tFound good region: " + str( MBI.BaseAddress )
                     ReadAddr = 0
                     while MBI.RegionSize > 0:
                         
@@ -169,12 +181,8 @@ def scan_memory( ):
                         windll.kernel32.ReadProcessMemory( hProcess, ReadAddr, Buff, BuffSize, 0 )
 
                         check_buffer( Buff.raw )
-                        
-                        
 
             windll.kernel32.CloseHandle( hProcess )
-
-            
 
     windll.kernel32.CloseHandle( hSnap )
     
