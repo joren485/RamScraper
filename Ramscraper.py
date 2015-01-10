@@ -1,5 +1,5 @@
+from time import sleep
 from ctypes import *
-import os
 
 ### Setting the necessary vars and structs
 LPVOID = c_void_p
@@ -9,6 +9,11 @@ WORD = c_uint16
 UINT = c_uint
 INVALID_HANDLE_VALUE = c_void_p(-1).value
 LONG = c_long
+
+TOKEN_ADJUST_PRIVILEGES = 0x00000020
+TOKEN_QUERY = 0x0008
+
+SE_PRIVILEGE_ENABLED = 0x00000002
 
 PROCESS_VM_READ = 0x0010
 PROCESS_VM_OPERATION = 0x0008
@@ -20,6 +25,8 @@ MEM_COMMIT = 0x1000
 PAGE_EXECUTE_READ = 0x20
 PAGE_EXECUTE_READWRITE = 0x40
 PAGE_READWRITE = 0x04
+
+TH32CS_SNAPPROCESS = 0x00000002
 
 class LUID(Structure):
     _fields_ = [
@@ -39,21 +46,8 @@ class TOKEN_PRIVILEGES(Structure):
         ("Privileges",      LUID_AND_ATTRIBUTES),
     ]
 
-class SYSTEM_INFO(Structure):
-    _fields_ = [("wProcessorArchitecture", WORD),
-                ("wReserved", WORD),
-                ("dwPageSize", DWORD),
-                ("lpMinimumApplicationAddress", DWORD),
-                ("lpMaximumApplicationAddress", DWORD),
-                ("dwActiveProcessorMask", DWORD),
-                ("dwNumberOfProcessors", DWORD),
-                ("dwProcessorType", DWORD),
-                ("dwAllocationGranularity", DWORD),
-                ("wProcessorLevel", WORD),
-                ("wProcessorRevision", WORD)]
 
 class MEMORY_BASIC_INFORMATION (Structure):
-
     _fields_ = [
         ("BaseAddress", c_void_p),
         ("AllocationBase", c_void_p),
@@ -63,6 +57,18 @@ class MEMORY_BASIC_INFORMATION (Structure):
         ("Protect", DWORD),
         ("Type", DWORD)
         ]
+
+class PROCESSENTRY32(Structure):
+     _fields_ = [("dwSize", c_ulong),
+                 ("cntUsage", c_ulong),
+                 ("th32ProcessID", c_ulong),
+                 ("th32DefaultHeapID", c_ulong),
+                 ("th32ModuleID", c_ulong),
+                 ("cntThreads", c_ulong),
+                 ("th32ParentProcessID", c_ulong),
+                 ("pcPriClassBase", c_ulong),
+                 ("dwFlags", c_ulong),
+                 ("szExeFile", c_char * 260)]
 
 def EnablePrivilege(privilegeStr, hToken = None):
     """Enable Privilege on token, if no token is given the function gets the token of the current process."""
@@ -81,78 +87,98 @@ def EnablePrivilege(privilegeStr, hToken = None):
     
     windll.advapi32.AdjustTokenPrivileges(hToken, False, byref(tp), sizeof(tp), None, None)
 
-
-def scan_pids(proc_name):
-    """Get a list of every pid, and check the basename of the process, return if it is proc_name"""
-    count = 32
-    while True:
-        ProcessIds = ( DWORD * count)()
-        cb = sizeof( ProcessIds )
-        BytesReturned = DWORD()
-        if windll.psapi.EnumProcesses( byref(ProcessIds), cb, byref(BytesReturned)):
-            if BytesReturned.value < cb:
-                break
-            else:
-                count *= 2
-        
-    for index in range(BytesReturned.value / sizeof( DWORD ) ):
-        ProcessId = ProcessIds[index]
-        hProcess = windll.kernel32.OpenProcess(PROCESS_QUERY_INFORMATION, False, ProcessId)
-        if hProcess:
-            ImageFileName = ( c_char * 260 )()
-            if windll.psapi.GetProcessImageFileNameA(hProcess, ImageFileName, 260) > 0:
-                filename = os.path.basename(ImageFileName.value)
-                if filename == proc_name:
-                    windll.kernel32.CloseHandle(hProcess)
-                    return ProcessId
-            windll.kernel32.CloseHandle(hProcess) 
-
-
-### THE INTERESTING PART ###
-## The pid of the process we are going to scan.
-proc_name = "notepad++.exe"
-print "[+]Scanning processes"
-print "\t[+]Process to scan for: " + proc_name
-
-pid = scan_pids( proc_name )
-print "\t[+]Found pid: " + str( pid )
-
-## Get the min and max scan address.
-print "[+]Retrieving scan range"
-si = SYSTEM_INFO()
-windll.kernel32.GetSystemInfo( byref( si ) )
-
-addr = si.lpMinimumApplicationAddress
-maxaddr = si.lpMaximumApplicationAddress
-
-print "\t[+]Scan range: " + str( hex( addr ) ) + " - " + str( hex( maxaddr ) )
-
-
-## Give this process SeDebugPrivilege
-print "[+]Enabling 'SeDebugPrivilege'"
-EnablePrivilege("SeDebugPrivilege")
-
-## Open the process
-print "[+]Opening the process"
-hProcess = windll.kernel32.OpenProcess( PROCESS_VM_READ | PROCESS_VM_OPERATION | PROCESS_QUERY_INFORMATION, 0, pid )
-
-print "[+]Start scanning"
-while addr < maxaddr:
-    MBI = MEMORY_BASIC_INFORMATION ()
-    windll.kernel32.VirtualQueryEx (hProcess, addr, byref( MBI ), sizeof( MBI ))
-
-## The new addr that will be scanned 
-    addr += MBI.RegionSize
+def check_buffer( buffer ):
+    """Test function to test the buffer, this function could contain anything. 
+       You could easily do something with regular expressions."""
     
-    if MBI.Type == MEM_PRIVATE and MBI.State == MEM_COMMIT and MBI.Protect in ( PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_READWRITE ):
-        print "\t[+]Found useful memory address: " + str( hex( MBI.BaseAddress ) ) + " | Region Size: " + str ( MBI.RegionSize / 1024) + "KB"
+    if "teststring" in buffer:
+        print "Found!"
+        return True
+    return False
 
-        cbuffer = c_buffer(MBI.RegionSize)
-        windll.kernel32.ReadProcessMemory( hProcess, MBI.BaseAddress, cbuffer, MBI.RegionSize, 0 )
+def scan_memory( ):
+    """Scan the memory of every process except some predefined processes."""
+    print "START SCANNING"
+    readlimit = 100*4096
+    
+    skip = ("svchost.exe", "iexplore.exe", "explorer.exe", "System",
+            "smss.exe", "csrss.exe", "winlogon.exe", "lsass.exe",
+            "spoolsv.exe", "alg.exe", "wuauclt.exe", "wininit.exe",
+            "services.exe", "lsm.exe", "audiodg.exe", "dllhost.exe",
+            "conhost.exe", "igfxsrvc.exe", "SearchFilterHost.exe",
+            "SearchFilterHost.exe", "wmpnetwk.exe", "SearchIndexer.exe",
+            "SearchProtocolHost.exe", "WUDFHost.exe", "dwm.exe", "LogonUI.exe")
+    
+    hSnap = windll.kernel32.CreateToolhelp32Snapshot( TH32CS_SNAPPROCESS, 0 )
+    
+    pe32 = PROCESSENTRY32()
+    pe32.dwSize = sizeof( PROCESSENTRY32 )
 
-        data = cbuffer.raw
+    ## The first pid i == 0 (System)
+    windll.kernel32.Process32First( hSnap, byref( pe32 ) )
 
-        if "Testing please" in data:
-            print "Found: " + str( MBI.BaseAddress )
+    ownpid= windll.kernel32.GetCurrentProcessId()
+    print "PID current process: " + str( ownpid )
 
-windll.kernel32.CloseHandle( hProcess )
+    print "Enumerating processes"
+    while True:
+        if windll.kernel32.Process32Next( hSnap, byref( pe32 ) ) == 0:
+            break
+        
+        name = pe32.szExeFile
+        pid = pe32.th32ProcessID
+        
+        
+        print "\tName: " + str( name ) + "| PID: " + str( pid )
+        if not name in skip and pid != ownpid:
+            print "\tScanning: "
+            ## Open the process
+            hProcess = windll.kernel32.OpenProcess( PROCESS_VM_READ | PROCESS_VM_OPERATION | PROCESS_QUERY_INFORMATION, 0, pid )
+            
+            addr = c_long(0)
+
+            while True:
+                MBI = MEMORY_BASIC_INFORMATION()
+                windll.kernel32.VirtualQueryEx( hProcess, addr, byref( MBI ), sizeof( MBI ) )
+                if (addr.value != 0 and MBI.BaseAddress == None) or addr.value < 0:
+                    break
+                
+                ## The new addr that will be scanned 
+                addr.value += MBI.RegionSize
+                
+                if MBI.Type == MEM_PRIVATE and MBI.State == MEM_COMMIT and MBI.Protect in ( PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_READWRITE ):
+                    print "\t\tFound good region: " + str( MBI.BaseAddress )
+                    ReadAddr = 0
+                    while MBI.RegionSize > 0:
+                        
+                        if ReadAddr != 0:
+                            ReadAddr += readlimit
+
+                        else:
+                            ReadAddr = MBI.BaseAddress
+
+                        if MBI.RegionSize > readlimit:
+                            BuffSize = readlimit
+                            MBI.RegionSize -= readlimit
+
+                        else:
+                            BuffSize = MBI.RegionSize
+                            MBI.RegionSize = 0
+
+                        Buff = create_string_buffer( BuffSize )
+                        windll.kernel32.ReadProcessMemory( hProcess, ReadAddr, Buff, BuffSize, 0 )
+
+                        check_buffer( Buff.raw )
+                        
+                        
+
+            windll.kernel32.CloseHandle( hProcess )
+
+            
+
+    windll.kernel32.CloseHandle( hSnap )
+    
+if __name__ == "__main__":
+    EnablePrivilege( 'SeDebugPrivilege' )
+    scan_memory()
+
