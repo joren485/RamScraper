@@ -47,7 +47,7 @@ class TOKEN_PRIVILEGES(Structure):
     ]
 
 
-class MEMORY_BASIC_INFORMATION (Structure):
+class MEMORY_BASIC_INFORMATION(Structure):
     _fields_ = [
         ("BaseAddress", c_void_p),
         ("AllocationBase", c_void_p),
@@ -98,7 +98,7 @@ def check_buffer( buffer ):
 
 def Processis64( hProcess ):
     """From MSDN: 
-        a value that is set to TRUE if the process is running under WOW64. 
+        [Returns] a value that is set to TRUE if the process is running under WOW64. 
         If the process is running under 32-bit Windows, the value is set to FALSE. 
         If the process is a 64-bit application running under 64-bit Windows, the value is also set to FALSE"""
 
@@ -139,8 +139,6 @@ def scan_memory( ):
         name = pe32.szExeFile
         pid = pe32.th32ProcessID
         
-        
-        
         if not name in skip and pid != ownpid:
             print "\t[+]Name: " + str( name ) + " | PID: " + str( pid )
             ## Open the process
@@ -152,6 +150,8 @@ def scan_memory( ):
                 MBI = MEMORY_BASIC_INFORMATION()
                 windll.kernel32.VirtualQueryEx( hProcess, addr.value, byref( MBI ), sizeof( MBI ) )
                
+                ## If the VirtualQueryEx call returns nothing, the max address has been reached, break
+                ## If the program is run in 32bit mode and scans a 64bit process it cant read some addresses so check AllocationBase if the address is readable. 
                 if ( addr.value != 0 and MBI.BaseAddress == None ) or (MBI.AllocationBase == None and not Processis64( hProcess ) ):
                     break
                 
