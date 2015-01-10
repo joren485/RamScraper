@@ -92,9 +92,9 @@ def check_buffer( buffer ):
        You could easily do something with regular expressions."""
     
     if "teststring" in buffer:
-        print "Found!"
-        return True
-    return False
+        return buffer.index( "teststring" )
+    
+    return "Not Found"
 
 def Processis64( hProcess ):
     """From MSDN: 
@@ -129,9 +129,9 @@ def scan_memory( ):
     windll.kernel32.Process32First( hSnap, byref( pe32 ) )
 
     ownpid= windll.kernel32.GetCurrentProcessId()
-    print "PID current process: " + str( ownpid )
+    print "[+]PID current process: " + str( ownpid )
 
-    print "Enumerating processes"
+    print "[+]Scanning processes"
     while True:
         if windll.kernel32.Process32Next( hSnap, byref( pe32 ) ) == 0:
             break
@@ -140,9 +140,9 @@ def scan_memory( ):
         pid = pe32.th32ProcessID
         
         
-        print "\tName: " + str( name ) + " | PID: " + str( pid )
+        
         if not name in skip and pid != ownpid:
-            print "\t\tScanning: "
+            print "\t[+]Name: " + str( name ) + " | PID: " + str( pid )
             ## Open the process
             hProcess = windll.kernel32.OpenProcess( PROCESS_VM_READ | PROCESS_VM_OPERATION | PROCESS_QUERY_INFORMATION, 0, pid )
             
@@ -180,7 +180,10 @@ def scan_memory( ):
                         Buff = create_string_buffer( BuffSize )
                         windll.kernel32.ReadProcessMemory( hProcess, ReadAddr, Buff, BuffSize, 0 )
 
-                        check_buffer( Buff.raw )
+
+                        found = check_buffer( Buff.raw )
+                        if found != "Not Found":
+                            print "\t\t[!]Found at address: " + str( ReadAddr + found )
 
             windll.kernel32.CloseHandle( hProcess )
 
